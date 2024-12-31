@@ -1,8 +1,10 @@
-import type { PropType } from 'vue'
-import { defineComponent, h, reactive, ref, toRefs, watch } from 'vue'
+import type { PropType, VNode } from 'vue'
+import { defineComponent, h, reactive, shallowRef, toRefs, watch } from 'vue'
+
 import { defaultOptions } from '../options'
 import { BaseSize, FontGap } from '../constants'
 import type { WatermarkDrawingParams, WatermarkOptions } from '../types'
+import { useObserver } from '../hook/useObserver'
 
 export const Watermark = defineComponent({
   name: 'Watermark',
@@ -33,8 +35,11 @@ export const Watermark = defineComponent({
     const [gapX, gapY] = toRefs(gap.value)
     const [gapXCenter, gapYCenter] = [gapX.value / 2, gapY.value / 2]
     // Create ref for watermark container and watermark element
-    const watermarkContainerRef = ref<HTMLDivElement>()
-    const watermarkRef = ref<HTMLDivElement>()
+    const watermarkContainerRef = shallowRef<HTMLDivElement>()
+    const watermarkRef = shallowRef<HTMLDivElement>()
+
+    let slotsSave: VNode[] | undefined
+    const { startWatch, disconnectAll } = useObserver(watermarkContainerRef, watermarkRef, () => slotsSave && renderWatermark(slotsSave))
 
     const appendPixel = (num: number): string => {
       // Convert the number to a string with 'px' appended
@@ -53,7 +58,7 @@ export const Watermark = defineComponent({
         canvasCtx.font = `${Number(fontSize)}px ${fontFamily}`
         const contents = Array.isArray(content.value) ? content.value : [content.value]
         // Measure the width of each content item
-        const widths = contents.map((item) => canvasCtx.measureText(item!).width)
+        const widths = contents.map(item => canvasCtx.measureText(item!).width)
         // Calculate the default width and height based on the measured content
         defaultWidth = Math.ceil(Math.max(...widths))
         defaultHeight = Number(fontSize) * contents.length + (contents.length - 1) * FontGap
@@ -135,17 +140,34 @@ export const Watermark = defineComponent({
       return watermarkStyle
     }
 
-    const addWatermark = (base64Url: string, watermarkWidth: number) => {
+    const addWatermark = (
+      canvas: HTMLCanvasElement,
+      watermarkWidth: number,
+    ) => {
       if (watermarkContainerRef.value && watermarkRef.value) {
         // Add watermark style
-        watermarkRef.value.setAttribute(
-          'style',
-          convertStyleToString({
-            ...getWatermarkStyle(), // Get the style for the watermark
-            backgroundImage: `url('${base64Url}')`, // Set the image as the background
-            backgroundSize: `${appendPixel((gapX.value + watermarkWidth) * BaseSize)}`, // Set the background size
-          }),
-        )
+
+        function setUrl(url: string) {
+          watermarkRef.value?.setAttribute(
+            'style',
+            convertStyleToString({
+              ...getWatermarkStyle(), // Get the style for the watermark
+              backgroundImage: `url('${url}')`, // Set the image as the background
+              backgroundSize: `${appendPixel((gapX.value + watermarkWidth) * BaseSize)}`, // Set the background size
+            }),
+          )
+        }
+        canvas.toBlob((blob) => {
+          if (blob) {
+            // Create a Blob URL
+            const url = URL.createObjectURL(blob)
+            disconnectAll()
+            setUrl(url)
+            startWatch()
+            // addWatermark(url, watermarkWidth)
+          }
+        })
+        setUrl(canvas.toDataURL())
         // Add the watermark element to the container
         watermarkContainerRef.value.append(watermarkRef.value)
       }
@@ -178,7 +200,9 @@ export const Watermark = defineComponent({
       // Draw the secondary text using the alternate drawing parameters
       fillTexts(canvasCtx, alternateDrawingParams.drawX, alternateDrawingParams.drawY, drawWidth, drawHeight)
       // Add the watermark to the canvas
-      addWatermark(canvas.toDataURL(), watermarkWidth)
+      // Get the canvas element
+      // Convert canvas to Blob
+      addWatermark(canvas, watermarkWidth)
     }
 
     watch(
@@ -196,71 +220,77 @@ export const Watermark = defineComponent({
       { deep: true, immediate: true },
     )
 
+    const renderWatermark = (slots: VNode[]) => {
+      const slot = slots[0]
+      // Create a new canvas element and get its context
+      const canvas = document.createElement('canvas')
+      const canvasCtx = canvas.getContext('2d')
+      if (canvasCtx) {
+        // Create a new div element for the watermark if it doesn't exist yet
+        if (!watermarkRef.value)
+          watermarkRef.value = document.createElement('div')
+        // Get the watermark size and canvas dimensions
+        const [watermarkWidth, watermarkHeight] = getWatermarkSize(canvasCtx)
+        const canvasWidth = (gapX.value + watermarkWidth) * devicePixelRatio
+        const canvasHeight = (gapY.value + watermarkHeight) * devicePixelRatio
+        const drawWidth = watermarkWidth * devicePixelRatio
+        const drawHeight = watermarkHeight * devicePixelRatio
+        // Set the canvas dimensions
+        canvas.setAttribute('width', `${appendPixel(canvasWidth * BaseSize)}`)
+        canvas.setAttribute('height', `${appendPixel(canvasHeight * BaseSize)}`)
+        // Set the drawing parameters
+        const drawingParams = {
+          drawX: (gapX.value * devicePixelRatio) / 2,
+          drawY: (gapY.value * devicePixelRatio) / 2,
+          rotateX: (drawWidth + gapX.value * devicePixelRatio) / 2,
+          rotateY: (drawHeight + gapY.value * devicePixelRatio) / 2,
+        }
+        // Set the alternate drawing parameters
+        const alternateDrawingParams = {
+          drawX: drawingParams.drawX + canvasWidth,
+          drawY: drawingParams.drawY + canvasHeight,
+          rotateX: drawingParams.rotateX + canvasWidth,
+          rotateY: drawingParams.rotateY + canvasHeight,
+        }
+        // Save the canvas state
+        canvasCtx.save()
+        // Rotate the canvas
+        rotateWatermark(canvasCtx, drawingParams.rotateX, drawingParams.rotateY, rotate.value)
+
+        if (image.value) {
+          // TODO: handle image watermark
+        }
+        else {
+          // Draw the text watermark
+          drawText(canvas, canvasCtx, drawWidth, drawHeight, watermarkWidth, drawingParams, alternateDrawingParams)
+        }
+      }
+      // Return a div element containing the original content and the watermark container
+      return h(
+        'div',
+        {
+          ref: watermarkContainerRef,
+          style: { position: 'relative' },
+        },
+        [slot],
+      )
+    }
+
     // Render the watermark overlay
     return () => {
       // Get the default slot content
       const slots = ctx.slots.default?.()
+      slotsSave = slots
       // Throw an error if no slot content is provided
-      if (!slots) throw new Error('@watermarkify: Slot is required to use <Watermark>')
+      if (!slots)
+        throw new Error('@watermarkify: Slot is required to use <Watermark>')
       // Throw an error if more than one slot content is provided
-      if (slots.length !== 1) throw new Error(`@watermarkify: <Watermark> requires exactly one slot, but got ${slots.length}`)
+      if (slots.length !== 1)
+        throw new Error(`@watermarkify: <Watermark> requires exactly one slot, but got ${slots.length}`)
 
-      const renderWatermark = () => {
-        const slot = slots[0]
-        // Create a new canvas element and get its context
-        const canvas = document.createElement('canvas')
-        const canvasCtx = canvas.getContext('2d')
-        if (canvasCtx) {
-          // Create a new div element for the watermark if it doesn't exist yet
-          if (!watermarkRef.value) watermarkRef.value = document.createElement('div')
-          // Get the watermark size and canvas dimensions
-          const [watermarkWidth, watermarkHeight] = getWatermarkSize(canvasCtx)
-          const canvasWidth = (gapX.value + watermarkWidth) * devicePixelRatio
-          const canvasHeight = (gapY.value + watermarkHeight) * devicePixelRatio
-          const drawWidth = watermarkWidth * devicePixelRatio
-          const drawHeight = watermarkHeight * devicePixelRatio
-          // Set the canvas dimensions
-          canvas.setAttribute('width', `${appendPixel(canvasWidth * BaseSize)}`)
-          canvas.setAttribute('height', `${appendPixel(canvasHeight * BaseSize)}`)
-          // Set the drawing parameters
-          const drawingParams = {
-            drawX: (gapX.value * devicePixelRatio) / 2,
-            drawY: (gapY.value * devicePixelRatio) / 2,
-            rotateX: (drawWidth + gapX.value * devicePixelRatio) / 2,
-            rotateY: (drawHeight + gapY.value * devicePixelRatio) / 2,
-          }
-          // Set the alternate drawing parameters
-          const alternateDrawingParams = {
-            drawX: drawingParams.drawX + canvasWidth,
-            drawY: drawingParams.drawY + canvasHeight,
-            rotateX: drawingParams.rotateX + canvasWidth,
-            rotateY: drawingParams.rotateY + canvasHeight,
-          }
-          // Save the canvas state
-          canvasCtx.save()
-          // Rotate the canvas
-          rotateWatermark(canvasCtx, drawingParams.rotateX, drawingParams.rotateY, rotate.value)
+      // renderWatermark(slots)
 
-          if (image.value) {
-            // TODO: handle image watermark
-          } else {
-            // Draw the text watermark
-            drawText(canvas, canvasCtx, drawWidth, drawHeight, watermarkWidth, drawingParams, alternateDrawingParams)
-          }
-        }
-        // Return a div element containing the original content and the watermark container
-        return h(
-          'div',
-          {
-            ref: watermarkContainerRef,
-            style: { position: 'relative' },
-          },
-          [slot],
-        )
-      }
-      renderWatermark()
-
-      return h('div', {}, renderWatermark())
+      return h('div', {}, renderWatermark(slots))
     }
   },
 })
