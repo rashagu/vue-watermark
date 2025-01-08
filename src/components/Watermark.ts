@@ -1,5 +1,5 @@
-import type { PropType, VNode } from 'vue'
-import { defineComponent, h, reactive, shallowRef, toRefs, watch } from 'vue'
+import type { CSSProperties, PropType, VNode } from 'vue'
+import { defineComponent, h, onMounted, reactive, ref, shallowRef, toRefs, watch } from 'vue'
 
 import { defaultOptions } from '../options'
 import { BaseSize, FontGap } from '../constants'
@@ -15,6 +15,7 @@ export const Watermark = defineComponent({
     },
   },
   setup(props, ctx) {
+    const watermarkDom = ref<symbol[]>([Symbol('watermarkDom')])
     // Merge props.options with defaultOptions
     const options = reactive({
       ...defaultOptions,
@@ -37,9 +38,13 @@ export const Watermark = defineComponent({
     // Create ref for watermark container and watermark element
     const watermarkContainerRef = shallowRef<HTMLDivElement>()
     const watermarkRef = shallowRef<HTMLDivElement>()
+    const watermarkRefStyle = ref<CSSProperties>({})
 
-    let slotsSave: VNode[] | undefined
-    const { startWatch, disconnectAll } = useObserver(watermarkContainerRef, watermarkRef, () => slotsSave && renderWatermark(slotsSave))
+    const { startWatch, disconnectAll } = useObserver(
+      watermarkContainerRef,
+      watermarkRef,
+      () => renderWatermark(),
+    )
 
     const appendPixel = (num: number): string => {
       // Convert the number to a string with 'px' appended
@@ -98,17 +103,9 @@ export const Watermark = defineComponent({
       })
     }
 
-    const convertStyleToString = (style: Record<string, any>): string => {
-      // Convert the style object to a string of CSS styles
-      // e.g. { z-index: 5; position: absolute; } -> z-index: 5; position: absolute;
-      return Object.keys(style)
-        .map((key: string) => `${key.replace(/([A-Z])/g, '-$1').toLowerCase()}: ${style[key]};`)
-        .join(' ')
-    }
-
     const getWatermarkStyle = () => {
       // Set default styles for the watermark
-      const watermarkStyle = {
+      const watermarkStyle: CSSProperties = {
         zIndex: zIndex.value,
         position: 'absolute',
         left: '0',
@@ -140,22 +137,17 @@ export const Watermark = defineComponent({
       return watermarkStyle
     }
 
-    const addWatermark = (
-      canvas: HTMLCanvasElement,
-      watermarkWidth: number,
-    ) => {
+    const addWatermark = (canvas: HTMLCanvasElement, watermarkWidth: number) => {
       if (watermarkContainerRef.value && watermarkRef.value) {
         // Add watermark style
 
         function setUrl(url: string) {
-          watermarkRef.value?.setAttribute(
-            'style',
-            convertStyleToString({
-              ...getWatermarkStyle(), // Get the style for the watermark
-              backgroundImage: `url('${url}')`, // Set the image as the background
-              backgroundSize: `${appendPixel((gapX.value + watermarkWidth) * BaseSize)}`, // Set the background size
-            }),
-          )
+          watermarkRefStyle.value = {
+            ...getWatermarkStyle(), // Get the style for the watermark
+            backgroundImage: `url('${url}')`, // Set the image as the background
+            backgroundSize: `${appendPixel((gapX.value + watermarkWidth) * BaseSize)}`, // Set the background size
+          }
+          watermarkDom.value = [Symbol('watermarkDom')]
         }
         canvas.toBlob((blob) => {
           if (blob) {
@@ -167,9 +159,9 @@ export const Watermark = defineComponent({
             // addWatermark(url, watermarkWidth)
           }
         })
-        setUrl(canvas.toDataURL())
+        // setUrl('')
         // Add the watermark element to the container
-        watermarkContainerRef.value.append(watermarkRef.value)
+        // watermarkContainerRef.value.append(watermarkRef.value)
       }
     }
 
@@ -220,15 +212,16 @@ export const Watermark = defineComponent({
       { deep: true, immediate: true },
     )
 
-    const renderWatermark = (slots: VNode[]) => {
-      const slot = slots[0]
+    function renderWatermark() {
+      // if (deepEqual(oldOptions, props.options))
+      //   return
       // Create a new canvas element and get its context
       const canvas = document.createElement('canvas')
       const canvasCtx = canvas.getContext('2d')
       if (canvasCtx) {
         // Create a new div element for the watermark if it doesn't exist yet
-        if (!watermarkRef.value)
-          watermarkRef.value = document.createElement('div')
+        // if (!watermarkRef.value)
+        //   watermarkRef.value = document.createElement('div')
         // Get the watermark size and canvas dimensions
         const [watermarkWidth, watermarkHeight] = getWatermarkSize(canvasCtx)
         const canvasWidth = (gapX.value + watermarkWidth) * devicePixelRatio
@@ -266,21 +259,20 @@ export const Watermark = defineComponent({
         }
       }
       // Return a div element containing the original content and the watermark container
-      return h(
-        'div',
-        {
-          ref: watermarkContainerRef,
-          style: { position: 'relative' },
-        },
-        [slot],
-      )
     }
+
+    onMounted(() => {
+      renderWatermark()
+    })
+
+    watch(() => props.options, () => {
+      renderWatermark()
+    }, { deep: true })
 
     // Render the watermark overlay
     return () => {
       // Get the default slot content
       const slots = ctx.slots.default?.()
-      slotsSave = slots
       // Throw an error if no slot content is provided
       if (!slots)
         throw new Error('@watermarkify: Slot is required to use <Watermark>')
@@ -289,8 +281,19 @@ export const Watermark = defineComponent({
         throw new Error(`@watermarkify: <Watermark> requires exactly one slot, but got ${slots.length}`)
 
       // renderWatermark(slots)
-
-      return h('div', {}, renderWatermark(slots))
+      return h('div', {}, h(
+        'div',
+        {
+          ref: watermarkContainerRef,
+          style: { position: 'relative' },
+        },
+        [
+          ctx.slots.default?.(),
+          watermarkDom.value.map((item) => {
+            return h('div', { ref: watermarkRef, style: watermarkRefStyle.value, key: item })
+          }),
+        ],
+      ))
     }
   },
 })

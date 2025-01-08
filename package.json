@@ -1,6 +1,6 @@
 {
   "name": "@kousum/vue-watermark",
-  "version": "0.0.8-alpha.1",
+  "version": "0.0.8-alpha.4",
   "private": false,
   "packageManager": "pnpm@9.12.2",
   "description": "Vue Watermark",
